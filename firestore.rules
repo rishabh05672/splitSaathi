@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper Functions ─────────────────────────────────────
+    function isLoggedIn() {
+      return request.auth != null;
+    }
+    function isGroupMember(groupId) {
+      return isLoggedIn() && exists(
+        /databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)
+      );
+    }
+    function getMemberRole(groupId) {
+      return get(
+        /databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)
+      ).data.role;
+    }
+    function isAdmin(groupId) {
+      return getMemberRole(groupId) == 'admin' || getMemberRole(groupId) == 'superAdmin';
+    }
+    function isEditor(groupId) {
+      return getMemberRole(groupId) == 'editor' || isAdmin(groupId);
+    }
+    function isSuperAdmin(groupId) {
+      return getMemberRole(groupId) == 'superAdmin';
+    }
+
+    // ─── Users ────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isLoggedIn();
+      allow create: if request.auth.uid == userId;
+      allow update: if request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // ─── Groups ───────────────────────────────────────────────
+    match /groups/{groupId} {
+      allow read: if isGroupMember(groupId);
+      allow create: if isLoggedIn();
+      allow update: if isAdmin(groupId);
+      allow delete: if isSuperAdmin(groupId);
+
+      // Members subcollection
+      match /members/{memberId} {
+        allow read: if isGroupMember(groupId);
+        allow write: if isAdmin(groupId);
+      }
+
+      // Expenses subcollection
+      match /expenses/{expenseId} {
+        allow read: if isGroupMember(groupId);
+        allow create: if isEditor(groupId);
+        allow update: if isEditor(groupId);
+        allow delete: if false; // soft delete only
+      }
+
+      // Join Requests
+      match /joinRequests/{requestId} {
+        allow read: if isAdmin(groupId) || request.auth.uid == resource.data.userId;
+        allow create: if isLoggedIn();
+        allow update: if isAdmin(groupId);
+        allow delete: if false;
+      }
+
+      // Settlements (written by Cloud Functions only)
+      match /settlements/{month} {
+        allow read: if isGroupMember(groupId);
+        allow write: if false;
+      }
+
+      // Payments
+      match /payments/{paymentId} {
+        allow read: if isGroupMember(groupId);
+        allow create: if isLoggedIn() && request.resource.data.fromUserId == request.auth.uid;
+        allow update: if isLoggedIn() && resource.data.toUserId == request.auth.uid;
+      }
+
+      // Activity Logs (append-only)
+      match /activityLogs/{logId} {
+        allow read: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId);
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+
+    // ─── Invites ──────────────────────────────────────────────
+    match /invites/{token} {
+      allow read: if isLoggedIn();
+      allow create: if isLoggedIn();
+      allow update: if isLoggedIn();
+      allow delete: if false;
+    }
+  }
+}
